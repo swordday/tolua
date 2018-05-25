@@ -1,4 +1,5 @@
-﻿using System;
+﻿#if ENABLE_LUA_INJECTION
+using System;
 using System.IO;
 using System.Xml;
 using System.Text;
@@ -24,9 +25,7 @@ class InjectedMethodInfo
     public int methodIndex;
 }
 
-#if ENABLE_LUA_INJECTION
 [InitializeOnLoad]
-#endif
 public static class ToLuaInjection
 {
     static int offset = 0;
@@ -45,6 +44,7 @@ public static class ToLuaInjection
     static MethodReference injectedFuncGetter;
     static HashSet<string> dropTypeGroup = new HashSet<string>();
     static HashSet<string> injectableTypeGroup = new HashSet<string>();
+    static Dictionary<MethodDefinition, VariableDefinition> resultTableGroup = new Dictionary<MethodDefinition, VariableDefinition>();
     static SortedDictionary<string, List<InjectedMethodInfo>> bridgeInfo = new SortedDictionary<string, List<InjectedMethodInfo>>();
     static OpCode[] ldargs = new OpCode[] { OpCodes.Ldarg_0, OpCodes.Ldarg_1, OpCodes.Ldarg_2, OpCodes.Ldarg_3 };
     static OpCode[] ldcI4s = new OpCode[] { OpCodes.Ldc_I4_1, OpCodes.Ldc_I4_2, OpCodes.Ldc_I4_4, OpCodes.Ldc_I4_8 };
@@ -67,14 +67,10 @@ public static class ToLuaInjection
         LoadAndCheckAssembly(true);
         InjectAll();
 
-#if ENABLE_LUA_INJECTION
         AppDomain.CurrentDomain.DomainUnload += DomainUnload;
-#endif
     }
 
-#if ENABLE_LUA_INJECTION
     [PostProcessScene]
-#endif
     public static void InjectAll()
     {
         var injectionStatus = EditorPrefs.GetInt(Application.dataPath + "WaitForInjection", 0);
@@ -83,7 +79,7 @@ public static class ToLuaInjection
             return;
         }
 
-        bool bInjectInterupted = !LoadBlackList() || UpdateMonoCecil() || !LoadBridgeEditorInfo();
+        bool bInjectInterupted = !LoadBlackList() || ToLuaMenu.UpdateMonoCecil(ref EnableSymbols) != 0 || !LoadBridgeEditorInfo();
         if (!bInjectInterupted)
         {
             CacheInjectableTypeGroup();
@@ -102,9 +98,7 @@ public static class ToLuaInjection
         }
     }
 
-#if ENABLE_LUA_INJECTION
     [MenuItem("Lua/Inject All &i", false, 5)]
-#endif
     public static void InjectByMenu()
     {
         if (Application.isPlaying)
@@ -121,22 +115,6 @@ public static class ToLuaInjection
         }
 
         InjectAll();
-    }
-
-#if ENABLE_LUA_INJECTION
-    [MenuItem("Lua/Injection Remove &r", false, 5)]
-#endif
-    static void RemoveInjection()
-    {
-        if (Application.isPlaying)
-        {
-            EditorUtility.DisplayDialog("警告", "游戏运行过程中无法操作", "确定");
-            return;
-        }
-
-        MonoScript cMonoScript = MonoImporter.GetAllRuntimeMonoScripts()[0];
-        MonoImporter.SetExecutionOrder(cMonoScript, MonoImporter.GetExecutionOrder(cMonoScript));
-        Debug.Log("Lua Injection Removed!");
     }
 
     static AssemblyDefinition LoadAndCheckAssembly(bool bPulse)
@@ -190,6 +168,7 @@ public static class ToLuaInjection
                 UpdateInjectionCacheSize();
                 ExportInjectionBridgeInfo();
                 WriteInjectedAssembly(assembly, assemblyPath);
+                resultTableGroup.Clear();
                 EditorApplication.Beep();
                 Debug.Log("Lua Injection Finished!");
                 EditorPrefs.SetInt(Application.dataPath + "InjectStatus", 1);
@@ -218,6 +197,7 @@ public static class ToLuaInjection
             Debug.Log("Already Injected!");
             return false;
         }
+        resultTableGroup.Clear();
         var injectAttrType = assembly.MainModule.Types.Single(type => type.FullName == "LuaInterface.UseDefinedAttribute");
         var attrCtorInfo = injectAttrType.Methods.Single(method => method.IsConstructor);
         assembly.CustomAttributes.Add(new CustomAttribute(attrCtorInfo));
@@ -572,12 +552,13 @@ public static class ToLuaInjection
 
     static VariableDefinition GetResultTable(MethodDefinition target)
     {
-        VariableDefinition luaTable = target.Body.Variables.FirstOrDefault(var => var.Name == "__iOutTable");
-
+        VariableDefinition luaTable = null;
+        resultTableGroup.TryGetValue(target, out luaTable);
         if (luaTable == null)
         {
-            luaTable = new VariableDefinition("__iOutTable", luaTableTypeDef);
+            luaTable = new VariableDefinition(luaTableTypeDef);
             target.Body.Variables.Add(luaTable);
+            resultTableGroup.Add(target, luaTable);
         }
 
         return luaTable;
@@ -1074,61 +1055,6 @@ public static class ToLuaInjection
         }
     }
 
-    static bool UpdateMonoCecil()
-    {
-        string appFileName = Environment.GetCommandLineArgs()[0];
-        string appPath = Path.GetDirectoryName(appFileName);
-        string directory = appPath + "/Data/Managed/";
-        if (UnityEngine.Application.platform == UnityEngine.RuntimePlatform.OSXEditor)
-        {
-            directory = appPath.Substring(0, appPath.IndexOf("MacOS")) + "Managed/";
-        }
-        string suitedMonoCecilPath = directory + "Mono.Cecil.dll";
-        string suitedMonoCecilMdbPath = directory + "Mono.Cecil.Mdb.dll";
-        string suitedMonoCecilPdbPath = directory + "Mono.Cecil.Pdb.dll";
-        string suitedMonoCecilToolPath = directory + "Unity.CecilTools.dll";
-
-        if (!File.Exists(suitedMonoCecilPath)
-            && !File.Exists(suitedMonoCecilMdbPath)
-            && !File.Exists(suitedMonoCecilPdbPath)
-        )
-        {
-            EnableSymbols = false;
-            Debug.Log("Haven't found Mono.Cecil.dll!Symbols Will Be Disabled");
-            return false;
-        }
-
-        bool bInjectionToolUpdated = false;
-        string injectionToolPath = CustomSettings.injectionFilesPath + "Editor/";
-        string existMonoCecilPath = injectionToolPath + Path.GetFileName(suitedMonoCecilPath);
-        string existMonoCecilPdbPath = injectionToolPath + Path.GetFileName(suitedMonoCecilPdbPath);
-        string existMonoCecilMdbPath = injectionToolPath + Path.GetFileName(suitedMonoCecilMdbPath);
-        string existMonoCecilToolPath = injectionToolPath + Path.GetFileName(suitedMonoCecilToolPath);
-
-        bInjectionToolUpdated = TryUpdate(suitedMonoCecilPath, existMonoCecilPath) ? true : bInjectionToolUpdated;
-        bInjectionToolUpdated = TryUpdate(suitedMonoCecilPdbPath, existMonoCecilPdbPath) ? true : bInjectionToolUpdated;
-        bInjectionToolUpdated = TryUpdate(suitedMonoCecilMdbPath, existMonoCecilMdbPath) ? true : bInjectionToolUpdated;
-        TryUpdate(suitedMonoCecilToolPath, existMonoCecilToolPath);
-        if (bInjectionToolUpdated)
-        {
-            RemoveInjection();
-        }
-        EnableSymbols = true;
-
-        return bInjectionToolUpdated;
-    }
-
-    static bool TryUpdate(string srcPath, string destPath)
-    {
-        if (GetFileContentMD5(srcPath) != GetFileContentMD5(destPath))
-        {
-            File.Copy(srcPath, destPath, true);
-            return true;
-        }
-
-        return false;
-    }
-
     static void CacheInjectableTypeGroup()
     {
         injectableTypeGroup.Clear();
@@ -1305,29 +1231,6 @@ public static class ToLuaInjection
 
         return true;
     }
-
-    static string GetFileContentMD5(string file)
-    {
-        try
-        {
-            FileStream fs = new FileStream(file, FileMode.Open);
-            System.Security.Cryptography.MD5 md5 = new System.Security.Cryptography.MD5CryptoServiceProvider();
-            byte[] retVal = md5.ComputeHash(fs);
-            fs.Close();
-
-            StringBuilder sb = StringBuilderCache.Acquire();
-            for (int i = 0; i < retVal.Length; i++)
-            {
-                sb.Append(retVal[i].ToString("x2"));
-            }
-            return StringBuilderCache.GetStringAndRelease(sb);
-        }
-        catch (System.Exception ex)
-        {
-            Debugger.Log("Md5file() fail, error:" + ex.Message);
-            return string.Empty;
-        }
-    }
 }
 
 public static class SystemXMLExtension
@@ -1364,3 +1267,5 @@ public static class SystemXMLExtension
         return null;
     }
 }
+
+#endif

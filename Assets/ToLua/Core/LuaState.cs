@@ -890,7 +890,34 @@ namespace LuaInterface
             }
         }
 
-        public LuaFunction GetFunction(string name, bool beLogMiss = true)
+		public string GetLuaString(int stackPos)
+		{
+			LuaTypes luatype = LuaDLL.lua_type(L, stackPos);
+			string retVal = null;
+
+			if (luatype == LuaTypes.LUA_TSTRING)
+			{
+				retVal = LuaDLL.lua_tostring(L, stackPos);
+			}
+			else
+			{
+				LuaDLL.luaL_typerror(L, stackPos, "string");
+			}
+			return retVal;
+		}
+
+		public double GetNumber(int stackPos)
+		{
+			if (LuaDLL.lua_isnumber(L, stackPos) == 0)
+			{
+				LuaDLL.luaL_typerror(L, stackPos, "number");
+				return 0;
+			}
+
+			return LuaDLL.lua_tonumber(L, stackPos);
+		}
+
+		public LuaFunction GetFunction(string name, bool beLogMiss = true)
         {
             WeakReference weak = null;
 
